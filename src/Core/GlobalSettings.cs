@@ -1,4 +1,5 @@
 ﻿using System;
+using Bit.Core.Enums;
 
 namespace Bit.Core
 {
@@ -15,6 +16,7 @@ namespace Bit.Core
         public string LicenseCertificatePassword { get; set; }
         public virtual string PushRelayBaseUri { get; set; }
         public virtual string InternalIdentityKey { get; set; }
+        public virtual string OidcIdentityClientKey { get; set; }
         public virtual string HibpApiKey { get; set; }
         public virtual bool DisableUserRegistration { get; set; }
         public virtual bool DisableEmailNewDevice { get; set; }
@@ -27,7 +29,8 @@ namespace Bit.Core
         public virtual ConnectionStringSettings Storage { get; set; } = new ConnectionStringSettings();
         public virtual ConnectionStringSettings Events { get; set; } = new ConnectionStringSettings();
         public virtual NotificationsSettings Notifications { get; set; } = new NotificationsSettings();
-        public virtual AttachmentSettings Attachment { get; set; } = new AttachmentSettings();
+        public virtual FileStorageSettings Attachment { get; set; } = new FileStorageSettings();
+        public virtual FileStorageSettings Send { get; set; } = new FileStorageSettings();
         public virtual IdentityServerSettings IdentityServer { get; set; } = new IdentityServerSettings();
         public virtual DataProtectionSettings DataProtection { get; set; } = new DataProtectionSettings();
         public virtual DocumentDbSettings DocumentDb { get; set; } = new DocumentDbSettings();
@@ -41,6 +44,7 @@ namespace Bit.Core
         public virtual AmazonSettings Amazon { get; set; } = new AmazonSettings();
         public virtual ServiceBusSettings ServiceBus { get; set; } = new ServiceBusSettings();
         public virtual AppleIapSettings AppleIap { get; set; } = new AppleIapSettings();
+        public virtual SsoSettings Sso { get; set; } = new SsoSettings();
 
         public class BaseServiceUriSettings
         {
@@ -50,11 +54,13 @@ namespace Bit.Core
             public string Identity { get; set; }
             public string Admin { get; set; }
             public string Notifications { get; set; }
+            public string Sso { get; set; }
             public string InternalNotifications { get; set; }
             public string InternalAdmin { get; set; }
             public string InternalIdentity { get; set; }
             public string InternalApi { get; set; }
             public string InternalVault { get; set; }
+            public string InternalSso { get; set; }
         }
 
         public class SqlSettings
@@ -96,7 +102,7 @@ namespace Bit.Core
             }
         }
 
-        public class AttachmentSettings
+        public class FileStorageSettings
         {
             private string _connectionString;
 
@@ -269,6 +275,11 @@ namespace Bit.Core
         {
             public string Password { get; set; }
             public bool AppInReview { get; set; }
+        }
+
+        public class SsoSettings
+        {
+            public int CacheLifetimeInSeconds { get; set; } = 60;
         }
     }
 }

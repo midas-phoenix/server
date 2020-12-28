@@ -291,6 +291,20 @@ namespace Bit.Icons.Services
                 return null;
             }
 
+            // Resolve host to make sure it is not an internal/private IP address
+            try
+            {
+                var hostEntry = Dns.GetHostEntry(uri.Host);
+                if (hostEntry?.AddressList.Any(ip => IsInternal(ip)) ?? true)
+                {
+                    return null;
+                }
+            }
+            catch
+            {
+                return null;
+            }
+
             using (var message = new HttpRequestMessage())
             {
                 message.RequestUri = uri;
@@ -404,6 +418,40 @@ namespace Bit.Icons.Services
         private string GetScheme(Uri uri)
         {
             return uri != null && uri.Scheme == "http" ? "http" : "https";
+        }
+
+        public static bool IsInternal(IPAddress ip)
+        {
+            if (IPAddress.IsLoopback(ip))
+            {
+                return true;
+            }
+
+            var ipString = ip.ToString();
+            if (ipString == "::1" || ipString == "::")
+            {
+                return true;
+            }
+
+            // IPv6
+            if (ip.AddressFamily == System.Net.Sockets.AddressFamily.InterNetworkV6)
+            {
+                return ipString.StartsWith("fc") || ipString.StartsWith("fd") ||
+                    ipString.StartsWith("fe") || ipString.StartsWith("ff");
+            }
+
+            // IPv4
+            var bytes = ip.GetAddressBytes();
+            return (bytes[0]) switch
+            {
+                0 => true,
+                10 => true,
+                127 => true,
+                169 => bytes[1] == 254, // Cloud environments, such as AWS
+                172 => bytes[1] < 32 && bytes[1] >= 16,
+                192 => bytes[1] == 168,
+                _ => false,
+            };
         }
     }
 }

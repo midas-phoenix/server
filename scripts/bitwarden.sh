@@ -19,11 +19,6 @@ https://bitwarden.com, https://github.com/bitwarden
 
 EOF
 
-docker --version
-docker-compose --version
-
-echo ""
-
 # Setup
 
 DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
@@ -37,8 +32,14 @@ fi
 
 SCRIPTS_DIR="$OUTPUT/scripts"
 GITHUB_BASE_URL="https://raw.githubusercontent.com/bitwarden/server/master"
-COREVERSION="1.34.0"
-WEBVERSION="2.14.0"
+COREVERSION="1.38.4"
+WEBVERSION="2.17.1"
+
+echo "bitwarden.sh version $COREVERSION"
+docker --version
+docker-compose --version
+
+echo ""
 
 # Functions
 
@@ -91,6 +92,7 @@ updatedb
 updaterun
 updateself
 updateconf
+renewcert
 rebuild
 help
 
@@ -132,6 +134,10 @@ elif [ "$1" == "stop" ]
 then
     checkOutputDirExists
     $SCRIPTS_DIR/run.sh stop $OUTPUT $COREVERSION $WEBVERSION
+elif [ "$1" == "renewcert" ]
+then
+    checkOutputDirExists
+    $SCRIPTS_DIR/run.sh renewcert $OUTPUT $COREVERSION $WEBVERSION
 elif [ "$1" == "updaterun" ]
 then
     checkOutputDirExists

@@ -1,6 +1,3 @@
-using System;
-using System.Security.Claims;
-using System.Threading.Tasks;
 using Bit.Api.Controllers;
 using Bit.Core;
 using Bit.Core.Enums;
@@ -12,21 +9,26 @@ using Bit.Core.Repositories;
 using Bit.Core.Services;
 using Microsoft.AspNetCore.Identity;
 using NSubstitute;
+using System;
+using System.Security.Claims;
+using System.Threading.Tasks;
 using Xunit;
 
 namespace Bit.Api.Test.Controllers
 {
     public class AccountsControllerTests : IDisposable
     {
-        private readonly AccountsController _sut;
 
-        private readonly IUserService _userService;
-        private readonly IUserRepository _userRepository;
+        private readonly AccountsController _sut;
+        private readonly GlobalSettings _globalSettings;
         private readonly ICipherRepository _cipherRepository;
         private readonly IFolderRepository _folderRepository;
+        private readonly IOrganizationService _organizationService;
         private readonly IOrganizationUserRepository _organizationUserRepository;
         private readonly IPaymentService _paymentService;
-        private readonly GlobalSettings _globalSettings;
+        private readonly ISsoUserRepository _ssoUserRepository;
+        private readonly IUserRepository _userRepository;
+        private readonly IUserService _userService;
 
         public AccountsControllerTests()
         {
@@ -34,17 +36,20 @@ namespace Bit.Api.Test.Controllers
             _userRepository = Substitute.For<IUserRepository>();
             _cipherRepository = Substitute.For<ICipherRepository>();
             _folderRepository = Substitute.For<IFolderRepository>();
+            _organizationService = Substitute.For<IOrganizationService>();
             _organizationUserRepository = Substitute.For<IOrganizationUserRepository>();
             _paymentService = Substitute.For<IPaymentService>();
             _globalSettings = new GlobalSettings();
             _sut = new AccountsController(
-                _userService,
-                _userRepository,
+                _globalSettings,
                 _cipherRepository,
                 _folderRepository,
+                _organizationService,
                 _organizationUserRepository,
                 _paymentService,
-                _globalSettings
+                _ssoUserRepository,
+                _userRepository,
+                _userService
             );
         }
 
@@ -296,6 +301,66 @@ namespace Bit.Api.Test.Controllers
 
             await Assert.ThrowsAsync<BadRequestException>(
                 () => _sut.PostPassword(new PasswordRequestModel())
+            );
+        }
+
+        [Fact]
+        public async Task GetApiKey_ShouldReturnApiKeyResponse()
+        {
+            var user = GenerateExampleUser();
+            ConfigureUserServiceToReturnValidPrincipalFor(user);
+            ConfigureUserServiceToAcceptPasswordFor(user);
+            await _sut.ApiKey(new ApiKeyRequestModel());
+        }
+
+        [Fact]
+        public async Task GetApiKey_WhenUserDoesNotExist_ShouldThrowUnauthorizedAccessException()
+        {
+            ConfigureUserServiceToReturnNullPrincipal();
+
+            await Assert.ThrowsAsync<UnauthorizedAccessException>(
+                () => _sut.ApiKey(new ApiKeyRequestModel())
+            );
+        }
+
+        [Fact]
+        public async Task GetApiKey_WhenPasswordCheckFails_ShouldThrowBadRequestException()
+        {
+            var user = GenerateExampleUser();
+            ConfigureUserServiceToReturnValidPrincipalFor(user);
+            ConfigureUserServiceToRejectPasswordFor(user);
+            await Assert.ThrowsAsync<BadRequestException>(
+                () => _sut.ApiKey(new ApiKeyRequestModel())
+            );
+        }
+
+        [Fact]
+        public async Task PostRotateApiKey_ShouldRotateApiKey()
+        {
+            var user = GenerateExampleUser();
+            ConfigureUserServiceToReturnValidPrincipalFor(user);
+            ConfigureUserServiceToAcceptPasswordFor(user);
+            await _sut.RotateApiKey(new ApiKeyRequestModel());
+        }
+
+        [Fact]
+        public async Task PostRotateApiKey_WhenUserDoesNotExist_ShouldThrowUnauthorizedAccessException()
+        {
+            ConfigureUserServiceToReturnNullPrincipal();
+
+            await Assert.ThrowsAsync<UnauthorizedAccessException>(
+                () => _sut.ApiKey(new ApiKeyRequestModel())
+            );
+        }
+
+        [Fact]
+        public async Task PostRotateApiKey_WhenPasswordCheckFails_ShouldThrowBadRequestException()
+        {
+            var user = GenerateExampleUser();
+            ConfigureUserServiceToReturnValidPrincipalFor(user);
+            ConfigureUserServiceToRejectPasswordFor(user);
+            await Assert.ThrowsAsync<BadRequestException>(
+                () => _sut.ApiKey(new ApiKeyRequestModel())
             );
         }
 

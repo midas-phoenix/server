@@ -10,6 +10,8 @@ using Bit.Core.Enums;
 using Bit.Core.Repositories;
 using Microsoft.Extensions.Logging;
 using Bit.Billing.Models;
+using StripeTaxRate = Stripe.TaxRate;
+using TaxRate = Bit.Core.Models.Table.TaxRate;
 
 namespace Bit.Core.Services
 {
@@ -25,13 +27,15 @@ namespace Bit.Core.Services
         private readonly IAppleIapService _appleIapService;
         private readonly ILogger<StripePaymentService> _logger;
         private readonly Braintree.BraintreeGateway _btGateway;
+        private readonly ITaxRateRepository _taxRateRepository;
 
         public StripePaymentService(
             ITransactionRepository transactionRepository,
             IUserRepository userRepository,
             GlobalSettings globalSettings,
             IAppleIapService appleIapService,
-            ILogger<StripePaymentService> logger)
+            ILogger<StripePaymentService> logger,
+            ITaxRateRepository taxRateRepository)
         {
             _btGateway = new Braintree.BraintreeGateway
             {
@@ -45,11 +49,12 @@ namespace Bit.Core.Services
             _userRepository = userRepository;
             _appleIapService = appleIapService;
             _logger = logger;
+            _taxRateRepository = taxRateRepository;
         }
 
         public async Task<string> PurchaseOrganizationAsync(Organization org, PaymentMethodType paymentMethodType,
             string paymentToken, Models.StaticStore.Plan plan, short additionalStorageGb,
-            short additionalSeats, bool premiumAccessAddon)
+            short additionalSeats, bool premiumAccessAddon, TaxInfo taxInfo)
         {
             var customerService = new CustomerService();
 
@@ -98,55 +103,27 @@ namespace Bit.Core.Services
                 throw new GatewayException("Payment method is not supported at this time.");
             }
 
-            var subCreateOptions = new SubscriptionCreateOptions
+            if (taxInfo != null && !string.IsNullOrWhiteSpace(taxInfo.BillingAddressCountry) && !string.IsNullOrWhiteSpace(taxInfo.BillingAddressPostalCode))
             {
-                OffSession = true,
-                TrialPeriodDays = plan.TrialPeriodDays,
-                Items = new List<SubscriptionItemOptions>(),
-                Metadata = new Dictionary<string, string>
+                var taxRateSearch = new TaxRate() 
                 {
-                    [org.GatewayIdField()] = org.Id.ToString()
+                    Country = taxInfo.BillingAddressCountry,
+                    PostalCode = taxInfo.BillingAddressPostalCode
+                };
+                var taxRates = await _taxRateRepository.GetByLocationAsync(taxRateSearch);
+
+                // should only be one tax rate per country/zip combo
+                var taxRate = taxRates.FirstOrDefault();
+                if (taxRate != null)
+                {
+                    taxInfo.StripeTaxRateId = taxRate.Id;
                 }
-            };
-
-            if (plan.StripePlanId != null)
-            {
-                subCreateOptions.Items.Add(new SubscriptionItemOptions
-                {
-                    Plan = plan.StripePlanId,
-                    Quantity = 1
-                });
             }
 
-            if (additionalSeats > 0 && plan.StripeSeatPlanId != null)
-            {
-                subCreateOptions.Items.Add(new SubscriptionItemOptions
-                {
-                    Plan = plan.StripeSeatPlanId,
-                    Quantity = additionalSeats
-                });
-            }
-
-            if (additionalStorageGb > 0)
-            {
-                subCreateOptions.Items.Add(new SubscriptionItemOptions
-                {
-                    Plan = plan.StripeStoragePlanId,
-                    Quantity = additionalStorageGb
-                });
-            }
-
-            if (premiumAccessAddon && plan.StripePremiumAccessPlanId != null)
-            {
-                subCreateOptions.Items.Add(new SubscriptionItemOptions
-                {
-                    Plan = plan.StripePremiumAccessPlanId,
-                    Quantity = 1
-                });
-            }
+            var subCreateOptions = new OrganizationPurchaseSubscriptionOptions(org, plan, taxInfo, additionalSeats, additionalStorageGb, premiumAccessAddon);
 
             Customer customer = null;
-            Subscription subscription = null;
+            Subscription subscription;
             try
             {
                 customer = await customerService.CreateAsync(new CustomerCreateOptions
@@ -159,7 +136,25 @@ namespace Bit.Core.Services
                     InvoiceSettings = new CustomerInvoiceSettingsOptions
                     {
                         DefaultPaymentMethod = stipeCustomerPaymentMethodId
-                    }
+                    },
+                    Address = new AddressOptions
+                    {
+                        Country = taxInfo.BillingAddressCountry,
+                        PostalCode = taxInfo.BillingAddressPostalCode,
+                        // Line1 is required in Stripe's API, suggestion in Docs is to use Business Name intead.
+                        Line1 = taxInfo.BillingAddressLine1 ?? string.Empty,
+                        Line2 = taxInfo.BillingAddressLine2,
+                        City = taxInfo.BillingAddressCity,
+                        State = taxInfo.BillingAddressState,
+                    },
+                    TaxIdData = !taxInfo.HasTaxId ? null : new List<CustomerTaxIdDataOptions>
+                    {
+                        new CustomerTaxIdDataOptions
+                        {
+                            Type = taxInfo.TaxIdType,
+                            Value = taxInfo.TaxIdNumber,
+                        },
+                    },
                 });
                 subCreateOptions.AddExpand("latest_invoice.payment_intent");
                 subCreateOptions.Customer = customer.Id;
@@ -206,7 +201,7 @@ namespace Bit.Core.Services
         }
 
         public async Task<string> UpgradeFreeOrganizationAsync(Organization org, Models.StaticStore.Plan plan,
-            short additionalStorageGb, short additionalSeats, bool premiumAccessAddon)
+            short additionalStorageGb, short additionalSeats, bool premiumAccessAddon, TaxInfo taxInfo)
         {
             if (!string.IsNullOrWhiteSpace(org.GatewaySubscriptionId))
             {
@@ -223,52 +218,24 @@ namespace Bit.Core.Services
                 throw new GatewayException("Could not find customer payment profile.");
             }
 
-            var subCreateOptions = new SubscriptionCreateOptions
+            if (taxInfo != null && !string.IsNullOrWhiteSpace(taxInfo.BillingAddressCountry) && !string.IsNullOrWhiteSpace(taxInfo.BillingAddressPostalCode))
             {
-                Customer = customer.Id,
-                Items = new List<SubscriptionItemOptions>(),
-                Metadata = new Dictionary<string, string>
+                var taxRateSearch = new TaxRate() 
                 {
-                    [org.GatewayIdField()] = org.Id.ToString()
+                    Country = taxInfo.BillingAddressCountry,
+                    PostalCode = taxInfo.BillingAddressPostalCode
+                };
+                var taxRates = await _taxRateRepository.GetByLocationAsync(taxRateSearch);
+
+                // should only be one tax rate per country/zip combo
+                var taxRate = taxRates.FirstOrDefault();
+                if (taxRate != null)
+                {
+                    taxInfo.StripeTaxRateId = taxRate.Id;
                 }
-            };
-
-            if (plan.StripePlanId != null)
-            {
-                subCreateOptions.Items.Add(new SubscriptionItemOptions
-                {
-                    Plan = plan.StripePlanId,
-                    Quantity = 1
-                });
             }
 
-            if (additionalSeats > 0 && plan.StripeSeatPlanId != null)
-            {
-                subCreateOptions.Items.Add(new SubscriptionItemOptions
-                {
-                    Plan = plan.StripeSeatPlanId,
-                    Quantity = additionalSeats
-                });
-            }
-
-            if (additionalStorageGb > 0)
-            {
-                subCreateOptions.Items.Add(new SubscriptionItemOptions
-                {
-                    Plan = plan.StripeStoragePlanId,
-                    Quantity = additionalStorageGb
-                });
-            }
-
-            if (premiumAccessAddon && plan.StripePremiumAccessPlanId != null)
-            {
-                subCreateOptions.Items.Add(new SubscriptionItemOptions
-                {
-                    Plan = plan.StripePremiumAccessPlanId,
-                    Quantity = 1
-                });
-            }
-
+            var subCreateOptions = new OrganizationUpgradeSubscriptionOptions(customer.Id, org, plan, taxInfo, additionalSeats, additionalStorageGb, premiumAccessAddon);
             var stripePaymentMethod = false;
             var paymentMethodType = PaymentMethodType.Credit;
             var hasBtCustomerId = customer.Metadata.ContainsKey("btCustomerId");
@@ -327,7 +294,7 @@ namespace Bit.Core.Services
         }
 
         public async Task<string> PurchasePremiumAsync(User user, PaymentMethodType paymentMethodType,
-            string paymentToken, short additionalStorageGb)
+            string paymentToken, short additionalStorageGb, TaxInfo taxInfo)
         {
             if (paymentMethodType != PaymentMethodType.Credit && string.IsNullOrWhiteSpace(paymentToken))
             {
@@ -375,7 +342,7 @@ namespace Bit.Core.Services
                 {
                     try
                     {
-                        await UpdatePaymentMethodAsync(user, paymentMethodType, paymentToken, true);
+                        await UpdatePaymentMethodAsync(user, paymentMethodType, paymentToken, true, taxInfo);
                     }
                     catch (Exception e)
                     {
@@ -445,7 +412,13 @@ namespace Bit.Core.Services
                     InvoiceSettings = new CustomerInvoiceSettingsOptions
                     {
                         DefaultPaymentMethod = stipeCustomerPaymentMethodId
-                    }
+                    },
+                    Address = new AddressOptions
+                    {
+                        Line1 = string.Empty,
+                        Country = taxInfo.BillingAddressCountry,
+                        PostalCode = taxInfo.BillingAddressPostalCode,
+                    },
                 });
                 createdStripeCustomer = true;
             }
@@ -708,8 +681,10 @@ namespace Bit.Core.Services
 
             var prorationDate = DateTime.UtcNow;
             var storageItem = sub.Items?.FirstOrDefault(i => i.Plan.Id == storagePlanId);
-            
-            var subResponse = await subscriptionService.UpdateAsync(sub.Id, new SubscriptionUpdateOptions
+            // Retain original collection method
+            var collectionMethod = sub.CollectionMethod;
+
+            var subUpdateOptions = new SubscriptionUpdateOptions
             {
                 Items = new List<SubscriptionItemOptions>
                 {
@@ -725,7 +700,26 @@ namespace Bit.Core.Services
                 DaysUntilDue = 1,
                 CollectionMethod = "send_invoice",
                 ProrationDate = prorationDate,
-            });
+            };
+
+            var customer = await new CustomerService().GetAsync(sub.CustomerId);
+            var taxRates = await _taxRateRepository.GetByLocationAsync(
+                new Bit.Core.Models.Table.TaxRate()
+                {
+                    Country = customer.Address.Country,
+                    PostalCode = customer.Address.PostalCode
+                }
+            );
+            var taxRate = taxRates.FirstOrDefault();
+            if (taxRate != null && !sub.DefaultTaxRates.Any(x => x.Equals(taxRate.Id)))
+            {
+                subUpdateOptions.DefaultTaxRates = new List<string>(1) 
+                { 
+                    taxRate.Id 
+                };
+            }
+
+            var subResponse = await subscriptionService.UpdateAsync(sub.Id, subUpdateOptions);
 
             string paymentIntentClientSecret = null;
             if (additionalStorage > 0)
@@ -754,9 +748,19 @@ namespace Bit.Core.Services
                         // This proration behavior prevents a false "credit" from
                         //  being applied forward to the next month's invoice
                         ProrationBehavior = "none",
+                        CollectionMethod = collectionMethod,
                     });
                     throw;
                 }
+            }
+
+            // Change back the subscription collection method
+            if (collectionMethod != "send_invoice")
+            {
+                await subscriptionService.UpdateAsync(sub.Id, new SubscriptionUpdateOptions
+                {
+                    CollectionMethod = collectionMethod,
+                });
             }
 
             return paymentIntentClientSecret;
@@ -811,7 +815,7 @@ namespace Bit.Core.Services
                 if (charges?.Data != null)
                 {
                     var refundService = new RefundService();
-                    foreach (var charge in charges.Data.Where(c => c.Captured.GetValueOrDefault() && !c.Refunded))
+                    foreach (var charge in charges.Data.Where(c => c.Captured && !c.Refunded))
                     {
                         await refundService.CreateAsync(new RefundCreateOptions { Charge = charge.Id });
                     }
@@ -906,7 +910,7 @@ namespace Bit.Core.Services
                         {
                             throw new GatewayException("Failed to charge PayPal customer.");
                         }
-                        
+
                         braintreeTransaction = transactionResult.Target;
                         invoice = await invoiceService.UpdateAsync(invoice.Id, new InvoiceUpdateOptions
                         {
@@ -1080,7 +1084,7 @@ namespace Bit.Core.Services
         }
 
         public async Task<bool> UpdatePaymentMethodAsync(ISubscriber subscriber, PaymentMethodType paymentMethodType,
-            string paymentToken, bool allowInAppPurchases = false)
+            string paymentToken, bool allowInAppPurchases = false, TaxInfo taxInfo = null)
         {
             if (subscriber == null)
             {
@@ -1268,7 +1272,16 @@ namespace Bit.Core.Services
                         InvoiceSettings = new CustomerInvoiceSettingsOptions
                         {
                             DefaultPaymentMethod = stipeCustomerPaymentMethodId
-                        }
+                        },
+                        Address = taxInfo == null ? null : new AddressOptions
+                        {
+                            Country = taxInfo.BillingAddressCountry,
+                            PostalCode = taxInfo.BillingAddressPostalCode,
+                            Line1 = taxInfo.BillingAddressLine1 ?? string.Empty,
+                            Line2 = taxInfo.BillingAddressLine2,
+                            City = taxInfo.BillingAddressCity,
+                            State = taxInfo.BillingAddressState,
+                        },
                     });
 
                     subscriber.Gateway = GatewayType.Stripe;
@@ -1327,7 +1340,16 @@ namespace Bit.Core.Services
                         InvoiceSettings = new CustomerInvoiceSettingsOptions
                         {
                             DefaultPaymentMethod = defaultPaymentMethodId
-                        }
+                        },
+                        Address = taxInfo == null ? null : new AddressOptions
+                        {
+                            Country = taxInfo.BillingAddressCountry,
+                            PostalCode = taxInfo.BillingAddressPostalCode,
+                            Line1 = taxInfo.BillingAddressLine1 ?? string.Empty,
+                            Line2 = taxInfo.BillingAddressLine2,
+                            City = taxInfo.BillingAddressCity,
+                            State = taxInfo.BillingAddressState,
+                        },
                     });
                 }
             }
@@ -1499,6 +1521,129 @@ namespace Bit.Core.Services
             }
 
             return subscriptionInfo;
+        }
+
+        public async Task<TaxInfo> GetTaxInfoAsync(ISubscriber subscriber)
+        {
+            if (subscriber == null || string.IsNullOrWhiteSpace(subscriber.GatewayCustomerId))
+            {
+                return null;
+            }
+
+            var customerService = new CustomerService();
+            var customer = await customerService.GetAsync(subscriber.GatewayCustomerId);
+
+            if (customer == null)
+            {
+                return null;
+            }
+
+            var address = customer.Address;
+            var taxId = customer.TaxIds?.FirstOrDefault();
+
+            // Line1 is required, so if missing we're using the subscriber name
+            // see: https://stripe.com/docs/api/customers/create#create_customer-address-line1
+            if (address != null && string.IsNullOrWhiteSpace(address.Line1))
+            {
+                address.Line1 = null;
+            }
+
+            return new TaxInfo
+            {
+                TaxIdNumber = taxId?.Value,
+                BillingAddressLine1 = address?.Line1,
+                BillingAddressLine2 = address?.Line2,
+                BillingAddressCity = address?.City,
+                BillingAddressState = address?.State,
+                BillingAddressPostalCode = address?.PostalCode,
+                BillingAddressCountry = address?.Country,
+            };
+        }
+
+        public async Task SaveTaxInfoAsync(ISubscriber subscriber, TaxInfo taxInfo)
+        {
+            if (subscriber != null && !string.IsNullOrWhiteSpace(subscriber.GatewayCustomerId))
+            {
+                var customerService = new CustomerService();
+                var customer = await customerService.UpdateAsync(subscriber.GatewayCustomerId, new CustomerUpdateOptions
+                {
+                    Address = new AddressOptions
+                    {
+                        Line1 = taxInfo.BillingAddressLine1 ?? string.Empty,
+                        Line2 = taxInfo.BillingAddressLine2,
+                        City = taxInfo.BillingAddressCity,
+                        State = taxInfo.BillingAddressState,
+                        PostalCode = taxInfo.BillingAddressPostalCode,
+                        Country = taxInfo.BillingAddressCountry,
+                    },
+                });
+
+                if (!subscriber.IsUser() && customer != null)
+                {
+                    var taxIdService = new TaxIdService();
+                    var taxId = customer.TaxIds?.FirstOrDefault();
+
+                    if (taxId != null)
+                    {
+                        await taxIdService.DeleteAsync(customer.Id, taxId.Id);
+                    }
+                    if (!string.IsNullOrWhiteSpace(taxInfo.TaxIdNumber) &&
+                        !string.IsNullOrWhiteSpace(taxInfo.TaxIdType))
+                    {
+                        await taxIdService.CreateAsync(customer.Id, new TaxIdCreateOptions
+                        {
+                            Type = taxInfo.TaxIdType,
+                            Value = taxInfo.TaxIdNumber,
+                        });
+                    }
+                }
+            }
+        }
+
+        public async Task<TaxRate> CreateTaxRateAsync(TaxRate taxRate)
+        {
+            var stripeTaxRateOptions = new TaxRateCreateOptions()
+            {
+                DisplayName = $"{taxRate.Country} - {taxRate.PostalCode}",
+                Inclusive = false,
+                Percentage = taxRate.Rate,
+                Active = true
+            };
+            var taxRateService = new TaxRateService();
+            var stripeTaxRate = taxRateService.Create(stripeTaxRateOptions);
+            taxRate.Id = stripeTaxRate.Id;
+            await _taxRateRepository.CreateAsync(taxRate);
+            return taxRate;
+        }
+
+        public async Task UpdateTaxRateAsync(TaxRate taxRate)
+        {
+            if (string.IsNullOrWhiteSpace(taxRate.Id))
+            {
+                return;
+            }
+
+            await ArchiveTaxRateAsync(taxRate);
+            await CreateTaxRateAsync(taxRate);
+        }
+
+        public async Task ArchiveTaxRateAsync(TaxRate taxRate)
+        {
+            if (string.IsNullOrWhiteSpace(taxRate.Id))
+            {
+                return;
+            }
+            
+            var stripeTaxRateService = new TaxRateService();
+            var updatedStripeTaxRate = await stripeTaxRateService.UpdateAsync(
+                    taxRate.Id, 
+                    new TaxRateUpdateOptions() { Active = false }
+            );
+            if (!updatedStripeTaxRate.Active)
+            {
+                taxRate.Active = false;
+                await _taxRateRepository.ArchiveAsync(taxRate);
+            }
         }
 
         private PaymentMethod GetLatestCardPaymentMethod(string customerId)
